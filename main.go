@@ -1,18 +1,13 @@
 package main
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"io"
+
 	"os"
 	"strings"
 
-	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/term"
 )
 
@@ -32,7 +27,7 @@ func main() {
 
 	args := flag.Args()
 
-	// Basic commad validation
+	// Basic command validation
 	if *keyCmd && (*encryptCmd || *decryptCmd || *keyFlag != "" || len(args) > 0) {
 		fmt.Println("Error: -genkkey should be used alone")
 		os.Exit(1)
@@ -60,11 +55,11 @@ func main() {
 		if *keyFileFlag != "" {
 			if *passwordProtect {
 				// Get password from user
-				fmt.Print("Enter password to protect ket file: ")
+				fmt.Print("Enter password to protect key file: ")
 				password, err := term.ReadPassword(int(os.Stdin.Fd()))
 				fmt.Println()
 				if err != nil {
-					fmt.Println("Error reading password: %v\n", err)
+					fmt.Printf("Error reading password: %v\n", err)
 					return
 				}
 
@@ -121,7 +116,7 @@ func main() {
 		// Try to load key from file
 		keyData, err := os.ReadFile(*keyFileFlag)
 		if err != nil {
-			fmt.Printf("Error reading key file: %v\n")
+			fmt.Printf("Error reading key file: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -131,7 +126,7 @@ func main() {
 		_, decodeErr := base64.StdEncoding.DecodeString(keyStr)
 		if decodeErr != nil {
 			// Key appears to be password-protected
-			fmt.Print("Enter password to decrypt key file: %v\n")
+			fmt.Print("Enter password to decrypt key file: ")
 			password, err := term.ReadPassword(int(os.Stdin.Fd()))
 			fmt.Println()
 			if err != nil {
@@ -202,7 +197,7 @@ func main() {
 
 			encrypted, err := encrypt([]byte(value), key)
 			if err != nil {
-				fmt.Printf("Error encrypting %s: %v\n")
+				fmt.Printf("Error encrypting %s: %v\n", name, err)
 				continue
 			}
 
@@ -231,157 +226,4 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-}
-
-// generateKey creates a new random encryption key
-func generateKey() []byte {
-	key := make([]byte, keyLength)
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		panic(err.Error())
-	}
-	return key
-}
-
-// encrypt takes a plaintext and key, returns base64-encoded encrypted string
-func encrypt(plaintext, key []byte) (string, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	// Create GCM mode
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	// Create nonce
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	// Encrypt and prepend nounce
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-
-	// Return as base64 encoded string
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-// decrypt takes a base64-encoded encrypted string and key, returns decrypted string
-func decrypt(encryptedStr string, key []byte) (string, error) {
-	// Decode base64
-	ciphertext, err := base64.StdEncoding.DecodeString(encryptedStr)
-	if err != nil {
-		return "", err
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	// Create GCM mode
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	// Extract nonce
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-
-	// Decrypt
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", err
-	}
-
-	return string(plaintext), nil
-}
-
-// encryptWithPassword encrypts data using a password
-func encryptWithPassword(data, password []byte) (string, error) {
-	// Generate a salt
-	salt := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		return "", err
-	}
-
-	// Generate key from password using PBKDF2
-	key := pbkdf2.Key(password, salt, 10000, 32, sha256.New)
-
-	// Create cipher block
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	// Create GCM mode
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", nil
-	}
-
-	// Create nonce
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	// Encrypt data
-	ciphertext := gcm.Seal(nonce, nonce, data, nil)
-
-	// Prepend salt to the ciphertext
-	ciphertext = append(salt, ciphertext...)
-
-	// Return as base64 encoded string
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-func decryptWithPassword(encryptedStr string, password []byte) ([]byte, error) {
-	ciphertext, err := base64.StdEncoding.DecodeString(encryptedStr)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract salt (first 16 bytes)
-	if len(ciphertext) < 16 {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-
-	salt, ciphertext := ciphertext[:16], ciphertext[16:]
-
-	// generate key from password using PBKDF2
-	key := pbkdf2.Key(password, salt, 10000, 32, sha256.New)
-
-	// Create a cipher block
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create GCM mode
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract nonce
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-
-	// Decrypt
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
 }
